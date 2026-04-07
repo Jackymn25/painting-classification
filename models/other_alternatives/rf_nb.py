@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.naive_bayes import BernoulliNB
@@ -56,7 +56,6 @@ LIKERT_MAP = {
 # Best params found after:
 # 1) removing unique_id
 # 2) adding room / who / season multihot features
-# 3) swapping the final classifier from RF to MLP
 # =========================
 FOOD_K = 42
 FEELING_K = 38
@@ -64,16 +63,11 @@ SOUNDTRACK_K = 62
 
 NB_ALPHA = 1.0
 
-MLP_HIDDEN_LAYER_SIZES = (64,)
-MLP_ACTIVATION = "relu"
-MLP_SOLVER = "adam"
-MLP_ALPHA = 1e-4
-MLP_LEARNING_RATE_INIT = 1e-3
-MLP_BATCH_SIZE = 32
-MLP_MAX_ITER = 500
-MLP_EARLY_STOPPING = True
-MLP_VALIDATION_FRACTION = 0.1
-MLP_N_ITER_NO_CHANGE = 20
+RF_N_ESTIMATORS = 146
+RF_MAX_DEPTH = 9
+RF_MIN_SAMPLES_LEAF = 2
+RF_MAX_FEATURES = "log2"
+RF_BOOTSTRAP = True
 
 MIN_TOKEN_LEN = 2
 EXCLUDE_MISSING_FROM_VOCAB = True
@@ -93,8 +87,6 @@ ALIASES = {
     "slowly": "slow",
     "icecream": "ice",
 }
-
-
 
 # =========================
 # Cleaning helpers
@@ -1103,7 +1095,7 @@ class MultiHotCategoryBundle:
 
 
 # =========================
-# MLP features
+# RF features
 # =========================
 def get_base_feature_cols(df_any: pd.DataFrame) -> list[str]:
     """
@@ -1136,7 +1128,7 @@ def get_base_feature_cols(df_any: pd.DataFrame) -> list[str]:
     return numeric_cols
 
 
-def build_mlp_feature_matrix(
+def build_rf_feature_matrix(
     df_any: pd.DataFrame,
     food_model: TopKBernoulliNB,
     feeling_model: TopKBernoulliNB,
@@ -1166,22 +1158,17 @@ def build_mlp_feature_matrix(
     return X
 
 
-def train_mlp_with_nb_features(
+def train_rf_with_nb_features(
     df_train: pd.DataFrame,
     food_k: int,
     feeling_k: int,
     soundtrack_k: int,
     nb_alpha: float,
-    hidden_layer_sizes,
-    activation: str,
-    solver: str,
-    alpha: float,
-    learning_rate_init: float,
-    batch_size,
-    max_iter: int,
-    early_stopping: bool,
-    validation_fraction: float,
-    n_iter_no_change: int,
+    n_estimators: int,
+    max_depth,
+    min_samples_leaf: int,
+    max_features,
+    bootstrap: bool,
     random_state: int,
 ):
     food_model, feeling_model, soundtrack_model = train_text_nb_models(
@@ -1194,7 +1181,7 @@ def train_mlp_with_nb_features(
 
     multihot_bundle = MultiHotCategoryBundle(MULTIHOT_COLS).fit(df_train)
 
-    X_train = build_mlp_feature_matrix(
+    X_train = build_rf_feature_matrix(
         df_train,
         food_model,
         feeling_model,
@@ -1203,33 +1190,29 @@ def train_mlp_with_nb_features(
     )
     y_train = df_train[LABEL_COL].to_numpy()
 
-    mlp_model = MLPClassifier(
-        hidden_layer_sizes=hidden_layer_sizes,
-        activation=activation,
-        solver=solver,
-        alpha=alpha,
-        learning_rate_init=learning_rate_init,
-        batch_size=batch_size,
-        max_iter=max_iter,
-        early_stopping=early_stopping,
-        validation_fraction=validation_fraction,
-        n_iter_no_change=n_iter_no_change,
+    rf_model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,
+        max_features=max_features,
+        bootstrap=bootstrap,
         random_state=random_state,
+        n_jobs=-1,
     )
-    mlp_model.fit(X_train, y_train)
+    rf_model.fit(X_train, y_train)
 
-    return mlp_model, food_model, feeling_model, soundtrack_model, multihot_bundle
+    return rf_model, food_model, feeling_model, soundtrack_model, multihot_bundle
 
 
-def predict_mlp_from_models(
+def predict_rf_from_models(
     df_any: pd.DataFrame,
-    mlp_model: MLPClassifier,
+    rf_model: RandomForestClassifier,
     food_model: TopKBernoulliNB,
     feeling_model: TopKBernoulliNB,
     soundtrack_model: TopKBernoulliNB,
     multihot_bundle: MultiHotCategoryBundle,
 ) -> pd.DataFrame:
-    X_any = build_mlp_feature_matrix(
+    X_any = build_rf_feature_matrix(
         df_any,
         food_model,
         feeling_model,
@@ -1237,7 +1220,7 @@ def predict_mlp_from_models(
         multihot_bundle,
     )
 
-    pred = mlp_model.predict(X_any)
+    pred = rf_model.predict(X_any)
 
     out = df_any.copy()
     out["pred"] = pred
@@ -1253,16 +1236,11 @@ def evaluate_one_param_combo_kfold(
     feeling_k: int,
     soundtrack_k: int,
     nb_alpha: float,
-    hidden_layer_sizes,
-    activation: str,
-    solver: str,
-    alpha: float,
-    learning_rate_init: float,
-    batch_size,
-    max_iter: int,
-    early_stopping: bool,
-    validation_fraction: float,
-    n_iter_no_change: int,
+    n_estimators: int,
+    max_depth,
+    min_samples_leaf: int,
+    max_features,
+    bootstrap: bool,
     n_splits: int = 3,
     random_state: int = 42,
 ) -> dict:
@@ -1281,33 +1259,28 @@ def evaluate_one_param_combo_kfold(
         df_val = df.iloc[val_idx].copy()
 
         (
-            mlp_model,
+            rf_model,
             food_model,
             feeling_model,
             soundtrack_model,
             multihot_bundle,
-        ) = train_mlp_with_nb_features(
+        ) = train_rf_with_nb_features(
             df_train=df_train,
             food_k=food_k,
             feeling_k=feeling_k,
             soundtrack_k=soundtrack_k,
             nb_alpha=nb_alpha,
-            hidden_layer_sizes=hidden_layer_sizes,
-            activation=activation,
-            solver=solver,
-            alpha=alpha,
-            learning_rate_init=learning_rate_init,
-            batch_size=batch_size,
-            max_iter=max_iter,
-            early_stopping=early_stopping,
-            validation_fraction=validation_fraction,
-            n_iter_no_change=n_iter_no_change,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
+            max_features=max_features,
+            bootstrap=bootstrap,
             random_state=random_state,
         )
 
-        val_pred_df = predict_mlp_from_models(
+        val_pred_df = predict_rf_from_models(
             df_val,
-            mlp_model,
+            rf_model,
             food_model,
             feeling_model,
             soundtrack_model,
@@ -1322,23 +1295,18 @@ def evaluate_one_param_combo_kfold(
         "feeling_k": feeling_k,
         "soundtrack_k": soundtrack_k,
         "nb_alpha": nb_alpha,
-        "hidden_layer_sizes": hidden_layer_sizes,
-        "activation": activation,
-        "solver": solver,
-        "alpha": alpha,
-        "learning_rate_init": learning_rate_init,
-        "batch_size": batch_size,
-        "max_iter": max_iter,
-        "early_stopping": early_stopping,
-        "validation_fraction": validation_fraction,
-        "n_iter_no_change": n_iter_no_change,
+        "n_estimators": n_estimators,
+        "max_depth": max_depth,
+        "min_samples_leaf": min_samples_leaf,
+        "max_features": max_features,
+        "bootstrap": bootstrap,
         "fold_scores": fold_scores,
         "mean_val_acc": float(np.mean(fold_scores)),
         "std_val_acc": float(np.std(fold_scores)),
     }
 
 
-def tune_mlp_nb_hyperparameters_kfold(
+def tune_rf_nb_hyperparameters_kfold(
     csv_path: str = CSV_PATH,
     n_splits: int = 3,
     random_state: int = 42,
@@ -1346,16 +1314,11 @@ def tune_mlp_nb_hyperparameters_kfold(
     feeling_k_grid=None,
     soundtrack_k_grid=None,
     nb_alpha_grid=None,
-    hidden_layer_sizes_grid=None,
-    activation_grid=None,
-    solver_grid=None,
-    alpha_grid=None,
-    learning_rate_init_grid=None,
-    batch_size_grid=None,
-    max_iter_grid=None,
-    early_stopping_grid=None,
-    validation_fraction_grid=None,
-    n_iter_no_change_grid=None,
+    n_estimators_grid=None,
+    max_depth_grid=None,
+    min_samples_leaf_grid=None,
+    max_features_grid=None,
+    bootstrap_grid=None,
 ):
     df = load_cleaned_data(csv_path)
 
@@ -1367,26 +1330,16 @@ def tune_mlp_nb_hyperparameters_kfold(
         soundtrack_k_grid = [62]
     if nb_alpha_grid is None:
         nb_alpha_grid = [1.0]
-    if hidden_layer_sizes_grid is None:
-        hidden_layer_sizes_grid = [(64,), (64, 32), (128, 64)]
-    if activation_grid is None:
-        activation_grid = ["relu"]
-    if solver_grid is None:
-        solver_grid = ["adam"]
-    if alpha_grid is None:
-        alpha_grid = [1e-4, 1e-3]
-    if learning_rate_init_grid is None:
-        learning_rate_init_grid = [1e-3, 5e-4]
-    if batch_size_grid is None:
-        batch_size_grid = [32]
-    if max_iter_grid is None:
-        max_iter_grid = [500]
-    if early_stopping_grid is None:
-        early_stopping_grid = [True]
-    if validation_fraction_grid is None:
-        validation_fraction_grid = [0.1]
-    if n_iter_no_change_grid is None:
-        n_iter_no_change_grid = [20]
+    if n_estimators_grid is None:
+        n_estimators_grid = [150, 175, 200]
+    if max_depth_grid is None:
+        max_depth_grid = [12, 14, 16]
+    if min_samples_leaf_grid is None:
+        min_samples_leaf_grid = [1, 2]
+    if max_features_grid is None:
+        max_features_grid = ["log2"]
+    if bootstrap_grid is None:
+        bootstrap_grid = [True]
 
     param_grid = list(
         product(
@@ -1394,16 +1347,11 @@ def tune_mlp_nb_hyperparameters_kfold(
             feeling_k_grid,
             soundtrack_k_grid,
             nb_alpha_grid,
-            hidden_layer_sizes_grid,
-            activation_grid,
-            solver_grid,
-            alpha_grid,
-            learning_rate_init_grid,
-            batch_size_grid,
-            max_iter_grid,
-            early_stopping_grid,
-            validation_fraction_grid,
-            n_iter_no_change_grid,
+            n_estimators_grid,
+            max_depth_grid,
+            min_samples_leaf_grid,
+            max_features_grid,
+            bootstrap_grid,
         )
     )
 
@@ -1419,16 +1367,11 @@ def tune_mlp_nb_hyperparameters_kfold(
             feeling_k,
             soundtrack_k,
             nb_alpha,
-            hidden_layer_sizes,
-            activation,
-            solver,
-            alpha,
-            learning_rate_init,
-            batch_size,
-            max_iter,
-            early_stopping,
-            validation_fraction,
-            n_iter_no_change,
+            n_estimators,
+            max_depth,
+            min_samples_leaf,
+            max_features,
+            bootstrap,
         ) = params
 
         result = evaluate_one_param_combo_kfold(
@@ -1437,16 +1380,11 @@ def tune_mlp_nb_hyperparameters_kfold(
             feeling_k=feeling_k,
             soundtrack_k=soundtrack_k,
             nb_alpha=nb_alpha,
-            hidden_layer_sizes=hidden_layer_sizes,
-            activation=activation,
-            solver=solver,
-            alpha=alpha,
-            learning_rate_init=learning_rate_init,
-            batch_size=batch_size,
-            max_iter=max_iter,
-            early_stopping=early_stopping,
-            validation_fraction=validation_fraction,
-            n_iter_no_change=n_iter_no_change,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
+            max_features=max_features,
+            bootstrap=bootstrap,
             n_splits=n_splits,
             random_state=random_state,
         )
@@ -1460,10 +1398,9 @@ def tune_mlp_nb_hyperparameters_kfold(
         print(
             f"[{combo_id}/{len(param_grid)}] "
             f"food_k={food_k}, feeling_k={feeling_k}, soundtrack_k={soundtrack_k}, "
-            f"hidden_layer_sizes={hidden_layer_sizes}, activation={activation}, "
-            f"solver={solver}, alpha={alpha}, learning_rate_init={learning_rate_init}, "
-            f"batch_size={batch_size}, max_iter={max_iter}, early_stopping={early_stopping}, "
-            f"validation_fraction={validation_fraction}, n_iter_no_change={n_iter_no_change} "
+            f"n_estimators={n_estimators}, max_depth={max_depth}, "
+            f"min_samples_leaf={min_samples_leaf}, max_features={max_features}, "
+            f"bootstrap={bootstrap} "
             f"=> mean_val_acc={result['mean_val_acc']:.4f}, std={result['std_val_acc']:.4f} "
             f"| elapsed={elapsed/60:.1f} min, remain≈{remain/60:.1f} min"
         )
@@ -1483,16 +1420,11 @@ def tune_mlp_nb_hyperparameters_kfold(
     print("feeling_k:", best_row["feeling_k"])
     print("soundtrack_k:", best_row["soundtrack_k"])
     print("nb_alpha:", best_row["nb_alpha"])
-    print("hidden_layer_sizes:", best_row["hidden_layer_sizes"])
-    print("activation:", best_row["activation"])
-    print("solver:", best_row["solver"])
-    print("alpha:", best_row["alpha"])
-    print("learning_rate_init:", best_row["learning_rate_init"])
-    print("batch_size:", best_row["batch_size"])
-    print("max_iter:", best_row["max_iter"])
-    print("early_stopping:", best_row["early_stopping"])
-    print("validation_fraction:", best_row["validation_fraction"])
-    print("n_iter_no_change:", best_row["n_iter_no_change"])
+    print("n_estimators:", best_row["n_estimators"])
+    print("max_depth:", best_row["max_depth"])
+    print("min_samples_leaf:", best_row["min_samples_leaf"])
+    print("max_features:", best_row["max_features"])
+    print("bootstrap:", best_row["bootstrap"])
     print("best mean validation accuracy:", round(best_row["mean_val_acc"], 4))
     print("best std:", round(best_row["std_val_acc"], 4))
     print("fold scores:", best_row["fold_scores"])
@@ -1503,16 +1435,11 @@ def tune_mlp_nb_hyperparameters_kfold(
             "feeling_k": best_row["feeling_k"],
             "soundtrack_k": best_row["soundtrack_k"],
             "nb_alpha": best_row["nb_alpha"],
-            "hidden_layer_sizes": best_row["hidden_layer_sizes"],
-            "activation": best_row["activation"],
-            "solver": best_row["solver"],
-            "alpha": best_row["alpha"],
-            "learning_rate_init": best_row["learning_rate_init"],
-            "batch_size": best_row["batch_size"],
-            "max_iter": best_row["max_iter"],
-            "early_stopping": best_row["early_stopping"],
-            "validation_fraction": best_row["validation_fraction"],
-            "n_iter_no_change": best_row["n_iter_no_change"],
+            "n_estimators": best_row["n_estimators"],
+            "max_depth": best_row["max_depth"],
+            "min_samples_leaf": best_row["min_samples_leaf"],
+            "max_features": best_row["max_features"],
+            "bootstrap": best_row["bootstrap"],
         },
         "best_mean_val_acc": best_row["mean_val_acc"],
         "best_std_val_acc": best_row["std_val_acc"],
@@ -1529,22 +1456,17 @@ def train_final_model(
 ):
     df = load_cleaned_data(csv_path)
 
-    return train_mlp_with_nb_features(
+    return train_rf_with_nb_features(
         df_train=df,
         food_k=FOOD_K,
         feeling_k=FEELING_K,
         soundtrack_k=SOUNDTRACK_K,
         nb_alpha=NB_ALPHA,
-        hidden_layer_sizes=MLP_HIDDEN_LAYER_SIZES,
-        activation=MLP_ACTIVATION,
-        solver=MLP_SOLVER,
-        alpha=MLP_ALPHA,
-        learning_rate_init=MLP_LEARNING_RATE_INIT,
-        batch_size=MLP_BATCH_SIZE,
-        max_iter=MLP_MAX_ITER,
-        early_stopping=MLP_EARLY_STOPPING,
-        validation_fraction=MLP_VALIDATION_FRACTION,
-        n_iter_no_change=MLP_N_ITER_NO_CHANGE,
+        n_estimators=RF_N_ESTIMATORS,
+        max_depth=RF_MAX_DEPTH,
+        min_samples_leaf=RF_MIN_SAMPLES_LEAF,
+        max_features=RF_MAX_FEATURES,
+        bootstrap=RF_BOOTSTRAP,
         random_state=random_state,
     )
 
@@ -1564,98 +1486,143 @@ def train_from_raw_or_clean_csv(
     else:
         df = clean_raw_csv_to_cleaned_csv(csv_path, cleaned_output_path)
 
-    return train_mlp_with_nb_features(
+    return train_rf_with_nb_features(
         df_train=df,
         food_k=FOOD_K,
         feeling_k=FEELING_K,
         soundtrack_k=SOUNDTRACK_K,
         nb_alpha=NB_ALPHA,
-        hidden_layer_sizes=MLP_HIDDEN_LAYER_SIZES,
-        activation=MLP_ACTIVATION,
-        solver=MLP_SOLVER,
-        alpha=MLP_ALPHA,
-        learning_rate_init=MLP_LEARNING_RATE_INIT,
-        batch_size=MLP_BATCH_SIZE,
-        max_iter=MLP_MAX_ITER,
-        early_stopping=MLP_EARLY_STOPPING,
-        validation_fraction=MLP_VALIDATION_FRACTION,
-        n_iter_no_change=MLP_N_ITER_NO_CHANGE,
+        n_estimators=RF_N_ESTIMATORS,
+        max_depth=RF_MAX_DEPTH,
+        min_samples_leaf=RF_MIN_SAMPLES_LEAF,
+        max_features=RF_MAX_FEATURES,
+        bootstrap=RF_BOOTSTRAP,
         random_state=random_state,
     )
 
+# =========================
+# Public prediction API
+# =========================
+_MODEL_CACHE = None
 
 
+def _get_trained_model():
+    """
+    Train once, then cache:
+    (
+        rf_model,
+        food_model,
+        feeling_model,
+        soundtrack_model,
+        multihot_bundle,
+    )
+    """
+    global _MODEL_CACHE
 
-if __name__ == "__main__":
-    print("Updated MLP pipeline summary:")
-    print("- remove unique_id from model input")
-    print("- add room / who / season multihot features")
-    print("- keep original 3-text-NB overall logic and swap the final classifier to MLP")
-    print()
-    print("Retuned best params:")
-    print("(Current constants below are still the old best; the active search block now uses a much wider coarse grid.)")
-    print(
-        {
-            "food_k": FOOD_K,
-            "feeling_k": FEELING_K,
-            "soundtrack_k": SOUNDTRACK_K,
-            "nb_alpha": NB_ALPHA,
-            "hidden_layer_sizes": MLP_HIDDEN_LAYER_SIZES,
-            "activation": MLP_ACTIVATION,
-            "solver": MLP_SOLVER,
-            "alpha": MLP_ALPHA,
-            "learning_rate_init": MLP_LEARNING_RATE_INIT,
-            "batch_size": MLP_BATCH_SIZE,
-            "max_iter": MLP_MAX_ITER,
-            "early_stopping": MLP_EARLY_STOPPING,
-            "validation_fraction": MLP_VALIDATION_FRACTION,
-            "n_iter_no_change": MLP_N_ITER_NO_CHANGE,
-        }
+    if _MODEL_CACHE is not None:
+        return _MODEL_CACHE
+
+    _MODEL_CACHE = train_final_model(csv_path=CSV_PATH, random_state=42)
+    return _MODEL_CACHE
+
+
+def predict(x):
+    """
+    x: 单行数据（dict）
+    return: 预测的 painting 名称
+    """
+    (
+        rf_model,
+        food_model,
+        feeling_model,
+        soundtrack_model,
+        multihot_bundle,
+    ) = _get_trained_model()
+
+    df_one_raw = pd.DataFrame([x])
+    df_one_clean = clean_raw_dataframe(df_one_raw)
+
+    if len(df_one_clean) == 0:
+        raise ValueError("Input row became empty after cleaning.")
+
+    pred_df = predict_rf_from_models(
+        df_one_clean,
+        rf_model,
+        food_model,
+        feeling_model,
+        soundtrack_model,
+        multihot_bundle,
     )
 
-    # search_result = tune_mlp_nb_hyperparameters_kfold(
+    pred_label = int(pred_df["pred"].iloc[0])
+    return LABEL_TO_NAME[pred_label]
+
+
+def predict_all(filename):
+    """
+    filename: csv 文件路径
+    return: 所有行预测结果 list[str]
+    """
+    (
+        rf_model,
+        food_model,
+        feeling_model,
+        soundtrack_model,
+        multihot_bundle,
+    ) = _get_trained_model()
+
+    df_raw = pd.read_csv(filename)
+    df_clean = clean_raw_dataframe(df_raw)
+
+    if len(df_clean) == 0:
+        return []
+
+    pred_df = predict_rf_from_models(
+        df_clean,
+        rf_model,
+        food_model,
+        feeling_model,
+        soundtrack_model,
+        multihot_bundle,
+    )
+
+    return [LABEL_TO_NAME[int(y)] for y in pred_df["pred"].tolist()]
+
+if __name__ == "__main__":
+    one = {
+        "unique_id": 999,
+        "On a scale of 1–10, how intense is the emotion conveyed by the artwork?": 7,
+        "Describe how this painting makes you feel.": "calm but slightly dreamy and nostalgic",
+        "This art piece makes me feel sombre.": "2 - Disagree",
+        "This art piece makes me feel content.": "4 - Agree",
+        "This art piece makes me feel calm.": "5 - Strongly agree",
+        "This art piece makes me feel uneasy.": "2 - Disagree",
+        "How many prominent colours do you notice in this painting?": 4,
+        "How many objects caught your eye in the painting?": 2,
+        "How much (in Canadian dollars) would you be willing to pay for this painting?": "200",
+        "If you could purchase this painting, which room would you put that painting in?": "Bedroom,Living room",
+        "If you could view this art in person, who would you want to view it with?": "Friends",
+        "What season does this art piece remind you of?": "Spring",
+        "If this painting was a food, what would be?": "blueberry cheesecake",
+        "Imagine a soundtrack for this painting. Describe that soundtrack without naming any objects in the painting.": "soft calm piano with a slow melody",
+    }
+
+    print(predict(one))
+
+    print(predict_all("cleaned_data_final.csv"))
+
+    # tuning api example
+    # search_result = tune_rf_nb_hyperparameters_kfold(
     #     csv_path=CSV_PATH,
     #     n_splits=5,
     #     random_state=42,
-    #     food_k_grid=[38, 40, 42],
-    #     feeling_k_grid=[38, 40, 42],
-    #     soundtrack_k_grid=[59, 60, 61, 62],
+    #     food_k_grid=[42],
+    #     feeling_k_grid=[38],
+    #     soundtrack_k_grid=[62],
     #     nb_alpha_grid=[1.0],
-    #     hidden_layer_sizes_grid=[(64,), (64, 32), (128, 64)],
-    #     activation_grid=["relu"],
-    #     solver_grid=["adam"],
-    #     alpha_grid=[1e-4, 1e-3],
-    #     learning_rate_init_grid=[1e-3, 5e-4],
-    #     batch_size_grid=[32],
-    #     max_iter_grid=[500],
-    #     early_stopping_grid=[True],
-    #     validation_fraction_grid=[0.1],
-    #     n_iter_no_change_grid=[20],
+    #     n_estimators_grid=list(range(140, 156, 3)),
+    #     max_depth_grid=[9, 10, 11, 12, 13],
+    #     min_samples_leaf_grid=[2, 3],
+    #     max_features_grid=[6, 7],
+    #     bootstrap_grid=[True],
     # )
-
-    # Wider coarse search:
-    # - keep the NB side fixed at the current best
-    # - expand MLP width / activation / regularization / learning rate / batch size
-    # - keep only one 2-layer baseline because deeper models underperformed in the current run
-    search_result = tune_mlp_nb_hyperparameters_kfold(
-        csv_path=CSV_PATH,
-        n_splits=5,
-        random_state=42,
-        food_k_grid=[42],
-        feeling_k_grid=[38],
-        soundtrack_k_grid=[62],
-        nb_alpha_grid=[1.0],
-        hidden_layer_sizes_grid=[(32,), (64,), (96,), (128,), (160,), (64, 32)],
-        activation_grid=["relu", "tanh"],
-        solver_grid=["adam"],
-        alpha_grid=[1e-4, 5e-4, 1e-3, 5e-3],
-        learning_rate_init_grid=[5e-4, 1e-3, 2e-3],
-        batch_size_grid=[16, 32],
-        max_iter_grid=[500],
-        early_stopping_grid=[True],
-        validation_fraction_grid=[0.1],
-        n_iter_no_change_grid=[20],
-    )
-    results_df = search_result["results_df"]
-    results_df.to_csv("updated_multihot_mlp_tuning_results.csv", index=False)
-    print("\nSaved tuning results to updated_multihot_mlp_tuning_results.csv")

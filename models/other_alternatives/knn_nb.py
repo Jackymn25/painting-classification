@@ -1,17 +1,15 @@
-import ast
 import re
 import time
 import warnings
 from collections import Counter
 from itertools import product
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.naive_bayes import BernoulliNB
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
 
 # =========================
@@ -53,9 +51,7 @@ LIKERT_MAP = {
 }
 
 # =========================
-# Best params found after:
-# 1) removing unique_id
-# 2) adding room / who / season multihot features
+# Best params / feature controls
 # =========================
 FOOD_K = 42
 FEELING_K = 38
@@ -63,11 +59,16 @@ SOUNDTRACK_K = 62
 
 NB_ALPHA = 1.0
 
-RF_N_ESTIMATORS = 175
-RF_MAX_DEPTH = 12
-RF_MIN_SAMPLES_LEAF = 1
-RF_MAX_FEATURES = "log2"
-RF_BOOTSTRAP = True
+KNN_N_NEIGHBORS = 27
+KNN_WEIGHTS = "distance"
+KNN_METRIC = "minkowski"
+KNN_P = 1
+
+# Standardization + random feature subset
+STANDARDIZE_INPUTS = True
+# Set to None to use all features. Otherwise randomly pick exactly N features.
+RANDOM_FEATURE_SUBSET_SIZE = 20
+FEATURE_SUBSET_RANDOM_STATE = 42
 
 MIN_TOKEN_LEN = 2
 EXCLUDE_MISSING_FROM_VOCAB = True
@@ -88,14 +89,11 @@ ALIASES = {
     "icecream": "ice",
 }
 
-
-
 # =========================
 # Cleaning helpers
 # kept in this file so the whole pipeline is self-contained
 # =========================
 def normalize_text(text):
-    """Normalize whitespace / dashes for payment parsing."""
     if pd.isna(text):
         return ""
     s = str(text).strip().lower()
@@ -106,11 +104,6 @@ def normalize_text(text):
 
 
 def collapse_spaced_thousands(text):
-    """
-    Convert spaced thousand groups like:
-    5 000 -> 5000
-    10 000 000 -> 10000000
-    """
     if not text:
         return text
 
@@ -211,9 +204,6 @@ def choose_best_payment_value(candidates, full_text):
 
 
 def parse_money_value(text):
-    """
-    Extract a payment value from free text.
-    """
     if pd.isna(text):
         return np.nan
 
@@ -334,10 +324,6 @@ def clean_bounded_scale(series, lower, upper):
 
 
 def clean_raw_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Reconstruct a cleaned dataframe in the same style as the uploaded cleaned CSV.
-    This is included so the whole workflow lives in one file.
-    """
     df = df_raw.copy()
 
     if "Painting" in df.columns:
@@ -403,395 +389,62 @@ def clean_raw_csv_to_cleaned_csv(input_csv_path: str, output_csv_path: str = "cl
 
 # =========================
 # Stop words
-# embedded from the original uploaded code so this file is standalone
 # =========================
 stop_words = {
-    "'d",
-    "'ll",
-    "'m",
-    "'re",
-    "'s",
-    "'ve",
-    "a",
-    "about",
-    "above",
-    "across",
-    "after",
-    "afterwards",
-    "again",
-    "against",
-    "all",
-    "almost",
-    "alone",
-    "along",
-    "already",
-    "also",
-    "although",
-    "always",
-    "am",
-    "among",
-    "amongst",
-    "amoungst",
-    "amount",
-    "an",
-    "and",
-    "another",
-    "any",
-    "anyhow",
-    "anyone",
-    "anything",
-    "anyway",
-    "anywhere",
-    "are",
-    "around",
-    "as",
-    "at",
-    "back",
-    "be",
-    "became",
-    "because",
-    "become",
-    "becomes",
-    "becoming",
-    "been",
-    "before",
-    "beforehand",
-    "behind",
-    "being",
-    "below",
-    "beside",
-    "besides",
-    "between",
-    "beyond",
-    "bill",
-    "both",
-    "bottom",
-    "but",
-    "by",
-    "ca",
-    "call",
-    "can",
-    "cannot",
-    "cant",
-    "co",
-    "con",
-    "could",
-    "couldnt",
-    "cry",
-    "de",
-    "describe",
-    "detail",
-    "did",
-    "do",
-    "does",
-    "doing",
-    "done",
-    "down",
-    "due",
-    "during",
-    "each",
-    "eg",
-    "eight",
-    "either",
-    "eleven",
-    "else",
-    "elsewhere",
-    "empty",
-    "enough",
-    "etc",
-    "even",
-    "ever",
-    "every",
-    "everyone",
-    "everything",
-    "everywhere",
-    "except",
-    "few",
-    "fifteen",
-    "fifty",
-    "fill",
-    "find",
-    "fire",
-    "first",
-    "five",
-    "for",
-    "former",
-    "formerly",
-    "forty",
-    "found",
-    "four",
-    "from",
-    "front",
-    "full",
-    "further",
-    "get",
-    "give",
-    "go",
-    "had",
-    "has",
-    "hasnt",
-    "have",
-    "he",
-    "hence",
-    "her",
-    "here",
-    "hereafter",
-    "hereby",
-    "herein",
-    "hereupon",
-    "hers",
-    "herself",
-    "him",
-    "himself",
-    "his",
-    "how",
-    "however",
-    "hundred",
-    "i",
-    "ie",
-    "if",
-    "in",
-    "inc",
-    "indeed",
-    "interest",
-    "into",
-    "is",
-    "it",
-    "its",
-    "itself",
-    "just",
-    "keep",
-    "last",
-    "latter",
-    "latterly",
-    "least",
-    "less",
-    "ltd",
-    "made",
-    "make",
-    "many",
-    "may",
-    "me",
-    "meanwhile",
-    "might",
-    "mill",
-    "mine",
-    "more",
-    "moreover",
-    "most",
-    "mostly",
-    "move",
-    "much",
-    "must",
-    "my",
-    "myself",
-    "n't",
-    "name",
-    "namely",
-    "neither",
-    "never",
-    "nevertheless",
-    "next",
-    "nine",
-    "no",
-    "nobody",
-    "none",
-    "noone",
-    "nor",
-    "not",
-    "nothing",
-    "now",
-    "nowhere",
-    "n‘t",
-    "n’t",
-    "of",
-    "off",
-    "often",
-    "on",
-    "once",
-    "one",
-    "only",
-    "onto",
-    "or",
-    "other",
-    "others",
-    "otherwise",
-    "our",
-    "ours",
-    "ourselves",
-    "out",
-    "over",
-    "own",
-    "part",
-    "per",
-    "perhaps",
-    "please",
-    "put",
-    "quite",
-    "rather",
-    "re",
-    "really",
-    "regarding",
-    "same",
-    "say",
-    "see",
-    "seem",
-    "seemed",
-    "seeming",
-    "seems",
-    "serious",
-    "several",
-    "she",
-    "should",
-    "show",
-    "side",
-    "since",
-    "sincere",
-    "six",
-    "sixty",
-    "so",
-    "some",
-    "somehow",
-    "someone",
-    "something",
-    "sometime",
-    "sometimes",
-    "somewhere",
-    "still",
-    "such",
-    "system",
-    "take",
-    "ten",
-    "than",
-    "that",
-    "the",
-    "their",
-    "them",
-    "themselves",
-    "then",
-    "thence",
-    "there",
-    "thereafter",
-    "thereby",
-    "therefore",
-    "therein",
-    "thereupon",
-    "these",
-    "they",
-    "thick",
-    "thin",
-    "third",
-    "this",
-    "those",
-    "though",
-    "three",
-    "through",
-    "throughout",
-    "thru",
-    "thus",
-    "to",
-    "together",
-    "too",
-    "top",
-    "toward",
-    "towards",
-    "twelve",
-    "twenty",
-    "two",
-    "un",
-    "under",
-    "unless",
-    "until",
-    "up",
-    "upon",
-    "us",
-    "used",
-    "using",
-    "various",
-    "very",
-    "via",
-    "was",
-    "we",
-    "well",
-    "were",
-    "what",
-    "whatever",
-    "when",
-    "whence",
-    "whenever",
-    "where",
-    "whereafter",
-    "whereas",
-    "whereby",
-    "wherein",
-    "whereupon",
-    "wherever",
-    "whether",
-    "which",
-    "while",
-    "whither",
-    "who",
-    "whoever",
-    "whole",
-    "whom",
-    "whose",
-    "why",
-    "will",
-    "with",
-    "within",
-    "without",
-    "would",
-    "yet",
-    "you",
-    "your",
-    "yours",
-    "yourself",
-    "yourselves",
-    "‘d",
-    "‘ll",
-    "‘m",
-    "‘re",
-    "‘s",
-    "‘ve",
-    "’d",
-    "’ll",
-    "’m",
-    "’re",
-    "’s",
-    "’ve"
+    "'d", "'ll", "'m", "'re", "'s", "'ve", "a", "about", "above", "across", "after",
+    "afterwards", "again", "against", "all", "almost", "alone", "along", "already", "also",
+    "although", "always", "am", "among", "amongst", "amoungst", "amount", "an", "and",
+    "another", "any", "anyhow", "anyone", "anything", "anyway", "anywhere", "are", "around",
+    "as", "at", "back", "be", "became", "because", "become", "becomes", "becoming", "been",
+    "before", "beforehand", "behind", "being", "below", "beside", "besides", "between", "beyond",
+    "bill", "both", "bottom", "but", "by", "ca", "call", "can", "cannot", "cant", "co", "con",
+    "could", "couldnt", "cry", "de", "describe", "detail", "did", "do", "does", "doing", "done",
+    "down", "due", "during", "each", "eg", "eight", "either", "eleven", "else", "elsewhere",
+    "empty", "enough", "etc", "even", "ever", "every", "everyone", "everything", "everywhere",
+    "except", "few", "fifteen", "fifty", "fill", "find", "fire", "first", "five", "for", "former",
+    "formerly", "forty", "found", "four", "from", "front", "full", "further", "get", "give", "go",
+    "had", "has", "hasnt", "have", "he", "hence", "her", "here", "hereafter", "hereby", "herein",
+    "hereupon", "hers", "herself", "him", "himself", "his", "how", "however", "hundred", "i", "ie",
+    "if", "in", "inc", "indeed", "interest", "into", "is", "it", "its", "itself", "just", "keep",
+    "last", "latter", "latterly", "least", "less", "ltd", "made", "make", "many", "may", "me",
+    "meanwhile", "might", "mill", "mine", "more", "moreover", "most", "mostly", "move", "much",
+    "must", "my", "myself", "n't", "name", "namely", "neither", "never", "nevertheless", "next",
+    "nine", "no", "nobody", "none", "noone", "nor", "not", "nothing", "now", "nowhere", "n‘t",
+    "n’t", "of", "off", "often", "on", "once", "one", "only", "onto", "or", "other", "others",
+    "otherwise", "our", "ours", "ourselves", "out", "over", "own", "part", "per", "perhaps", "please",
+    "put", "quite", "rather", "re", "really", "regarding", "same", "say", "see", "seem", "seemed",
+    "seeming", "seems", "serious", "several", "she", "should", "show", "side", "since", "sincere",
+    "six", "sixty", "so", "some", "somehow", "someone", "something", "sometime", "sometimes",
+    "somewhere", "still", "such", "system", "take", "ten", "than", "that", "the", "their", "them",
+    "themselves", "then", "thence", "there", "thereafter", "thereby", "therefore", "therein", "thereupon",
+    "these", "they", "thick", "thin", "third", "this", "those", "though", "three", "through",
+    "throughout", "thru", "thus", "to", "together", "too", "top", "toward", "towards", "twelve",
+    "twenty", "two", "un", "under", "unless", "until", "up", "upon", "us", "used", "using", "various",
+    "very", "via", "was", "we", "well", "were", "what", "whatever", "when", "whence", "whenever",
+    "where", "whereafter", "whereas", "whereby", "wherein", "whereupon", "wherever", "whether", "which",
+    "while", "whither", "who", "whoever", "whole", "whom", "whose", "why", "will", "with", "within",
+    "without", "would", "yet", "you", "your", "yours", "yourself", "yourselves", "‘d", "‘ll", "‘m",
+    "‘re", "‘s", "‘ve", "’d", "’ll", "’m", "’re", "’s", "’ve"
 }
 
 # =========================
 # Text preprocessing / NB
 # =========================
 def simple_singularize(token: str) -> str:
-    """Keep the original light singularization logic."""
     if token in ALIASES:
         return ALIASES[token]
-
     if len(token) <= 3:
         return token
-
     if token.endswith("ies") and len(token) > 4:
         return token[:-3] + "y"
-
     if token.endswith("es") and len(token) > 4 and not token.endswith("ses"):
         return token[:-2]
-
     if token.endswith("s") and len(token) > 3 and not token.endswith("ss"):
         return token[:-1]
-
     return token
 
 
 def tokenize_text(text) -> list[str]:
-    """
-    Original logic:
-    1) lowercase
-    2) remove punctuation
-    3) light singularization
-    4) remove stopwords
-    """
     if pd.isna(text):
         text = "missing"
 
@@ -807,21 +460,16 @@ def tokenize_text(text) -> list[str]:
             continue
 
         tok = simple_singularize(tok)
-
         if len(tok) < MIN_TOKEN_LEN:
             continue
         if tok in stop_words:
             continue
-
         tokens.append(tok)
 
     return tokens
 
 
 def select_top_k_vocab_from_training(texts, k: int) -> tuple[list[str], dict]:
-    """
-    Use document frequency on training texts only.
-    """
     if k <= 0:
         raise ValueError("k must be > 0.")
 
@@ -829,10 +477,8 @@ def select_top_k_vocab_from_training(texts, k: int) -> tuple[list[str], dict]:
 
     for text in pd.Series(texts).fillna("missing"):
         uniq_tokens = set(tokenize_text(text))
-
         if EXCLUDE_MISSING_FROM_VOCAB:
             uniq_tokens.discard("missing")
-
         for tok in uniq_tokens:
             doc_counter[tok] += 1
 
@@ -840,7 +486,6 @@ def select_top_k_vocab_from_training(texts, k: int) -> tuple[list[str], dict]:
         raise ValueError("No usable tokens found in the training data after preprocessing.")
 
     items = list(doc_counter.items())
-
     if SORT_TIES_ALPHABETICALLY:
         items.sort(key=lambda x: (-x[1], x[0]))
     else:
@@ -851,18 +496,9 @@ def select_top_k_vocab_from_training(texts, k: int) -> tuple[list[str], dict]:
 
 
 class TopKBernoulliNB:
-    """
-    Same idea as the original code:
-    - choose top-k vocabulary from training set only
-    - binary multi-hot vector
-    - BernoulliNB
-    - zero-hit -> class prior
-    """
-
     def __init__(self, k: int, alpha: float = NB_ALPHA):
         self.k = k
         self.alpha = alpha
-
         self.vocab_ = None
         self.vocab_index_ = None
         self.doc_freq_ = None
@@ -871,37 +507,29 @@ class TopKBernoulliNB:
     def fit(self, texts, y):
         self.vocab_, self.doc_freq_ = select_top_k_vocab_from_training(texts, self.k)
         self.vocab_index_ = {tok: i for i, tok in enumerate(self.vocab_)}
-
         X = self._vectorize(texts)
-
         if X.shape[1] == 0:
             raise ValueError("Vocabulary is empty after top-k selection.")
-
         self.model_ = BernoulliNB(alpha=self.alpha)
         self.model_.fit(X, np.asarray(y, dtype=int))
         return self
 
     def _vectorize_one(self, text) -> np.ndarray:
         row = np.zeros(len(self.vocab_), dtype=np.int8)
-
         uniq_tokens = set(tokenize_text(text))
         for tok in uniq_tokens:
             j = self.vocab_index_.get(tok)
             if j is not None:
                 row[j] = 1
-
         return row
 
     def _vectorize(self, texts) -> np.ndarray:
         if isinstance(texts, str):
             texts = [texts]
-
         texts = pd.Series(texts).fillna("missing")
         X = np.zeros((len(texts), len(self.vocab_)), dtype=np.int8)
-
         for i, text in enumerate(texts):
             X[i] = self._vectorize_one(text)
-
         return X
 
     def hit_count(self, texts) -> np.ndarray:
@@ -911,14 +539,12 @@ class TopKBernoulliNB:
     def predict_proba(self, texts) -> np.ndarray:
         X = self._vectorize(texts)
         probs = self.model_.predict_proba(X)
-
         if ZERO_HIT_RETURNS_PRIOR:
             hits = X.sum(axis=1)
             zero_mask = hits == 0
             if np.any(zero_mask):
                 prior = self.model_.class_count_ / self.model_.class_count_.sum()
                 probs[zero_mask] = prior
-
         return probs
 
     def predict(self, texts) -> np.ndarray:
@@ -931,7 +557,6 @@ class TopKBernoulliNB:
 
 def load_cleaned_data(csv_path: str = CSV_PATH) -> pd.DataFrame:
     return pd.read_csv(csv_path)
-
 
 
 def train_food_nb(df_train: pd.DataFrame, k: int = FOOD_K, alpha: float = NB_ALPHA) -> TopKBernoulliNB:
@@ -950,30 +575,6 @@ def train_soundtrack_nb(df_train: pd.DataFrame, k: int = SOUNDTRACK_K, alpha: fl
     model = TopKBernoulliNB(k=k, alpha=alpha)
     model.fit(df_train[SOUND_COL], df_train[LABEL_COL])
     return model
-
-
-def predict_food(text: str, food_model: TopKBernoulliNB) -> int:
-    return int(food_model.predict_one(text))
-
-
-def predict_proba_food(text: str, food_model: TopKBernoulliNB) -> np.ndarray:
-    return food_model.predict_proba([text])[0]
-
-
-def predict_feeling(text: str, feeling_model: TopKBernoulliNB) -> int:
-    return int(feeling_model.predict_one(text))
-
-
-def predict_proba_feeling(text: str, feeling_model: TopKBernoulliNB) -> np.ndarray:
-    return feeling_model.predict_proba([text])[0]
-
-
-def predict_soundtrack(text: str, soundtrack_model: TopKBernoulliNB) -> int:
-    return int(soundtrack_model.predict_one(text))
-
-
-def predict_proba_soundtrack(text: str, soundtrack_model: TopKBernoulliNB) -> np.ndarray:
-    return soundtrack_model.predict_proba([text])[0]
 
 
 def train_text_nb_models(
@@ -1032,37 +633,19 @@ def build_nb_feature_frame(
         index=df_any.index,
     )
 
-
 # =========================
-# New part:
 # multihot for the 3 categorical variables
 # =========================
 def split_multiselect_cell(x) -> list[str]:
-    """
-    Turn:
-    "Bedroom,Living room"
-    into:
-    ["Bedroom", "Living room"]
-    """
     if pd.isna(x):
         return []
-
     s = str(x).strip()
     if not s or s.lower() == "missing":
         return []
-
-    return [
-        part.strip()
-        for part in s.split(",")
-        if part.strip() and part.strip().lower() != "missing"
-    ]
+    return [part.strip() for part in s.split(",") if part.strip() and part.strip().lower() != "missing"]
 
 
 class MultiHotCategoryBundle:
-    """
-    Fit MultiLabelBinarizer on train only for each multi-select categorical column.
-    """
-
     def __init__(self, columns: list[str]):
         self.columns = list(columns)
         self.encoders = {}
@@ -1090,24 +673,15 @@ class MultiHotCategoryBundle:
                 f"{safe_col_prefix}__{re.sub(r'[^0-9a-zA-Z]+', '_', cls).strip('_').lower()}"
                 for cls in mlb.classes_
             ]
-
             frames.append(pd.DataFrame(arr, columns=col_names, index=df_any.index))
 
         return pd.concat(frames, axis=1)
 
 
 # =========================
-# RF features
+# KNN features + scaling + feature subset
 # =========================
 def get_base_feature_cols(df_any: pd.DataFrame) -> list[str]:
-    """
-    Keep original numeric features,
-    but explicitly:
-    - remove unique_id
-    - remove raw text columns
-    - remove raw multihot categorical columns
-    - remove Painting
-    """
     exclude_cols = {
         LABEL_COL,
         UNIQUE_ID_COL,
@@ -1119,18 +693,16 @@ def get_base_feature_cols(df_any: pd.DataFrame) -> list[str]:
         WHO_COL,
         SEASON_COL,
     }
-
     candidate_cols = [col for col in df_any.columns if col not in exclude_cols]
 
     numeric_cols = []
     for col in candidate_cols:
         if pd.api.types.is_numeric_dtype(df_any[col]) or pd.api.types.is_bool_dtype(df_any[col]):
             numeric_cols.append(col)
-
     return numeric_cols
 
 
-def build_rf_feature_matrix(
+def build_knn_feature_matrix(
     df_any: pd.DataFrame,
     food_model: TopKBernoulliNB,
     feeling_model: TopKBernoulliNB,
@@ -1139,15 +711,8 @@ def build_rf_feature_matrix(
 ) -> pd.DataFrame:
     base_cols = get_base_feature_cols(df_any)
     base_X = df_any[base_cols].copy()
-
     multihot_X = multihot_bundle.transform(df_any)
-
-    nb_X = build_nb_feature_frame(
-        df_any,
-        food_model,
-        feeling_model,
-        soundtrack_model,
-    )
+    nb_X = build_nb_feature_frame(df_any, food_model, feeling_model, soundtrack_model)
 
     X = pd.concat(
         [
@@ -1160,18 +725,52 @@ def build_rf_feature_matrix(
     return X
 
 
-def train_rf_with_nb_features(
+def select_random_feature_subset(feature_names, subset_size, random_state):
+    feature_names = list(feature_names)
+    total = len(feature_names)
+    if subset_size is None or subset_size >= total:
+        return feature_names
+
+    if subset_size <= 0:
+        raise ValueError("subset_size must be > 0 or None")
+
+    rng = np.random.RandomState(random_state)
+    chosen = rng.choice(np.array(feature_names), size=int(subset_size), replace=False)
+    chosen = list(chosen)
+    return chosen
+
+
+def fit_standardizer_df(X_train: pd.DataFrame):
+    mu = X_train.mean(axis=0)
+    sigma = X_train.std(axis=0, ddof=0)
+    sigma = sigma.replace(0, 1.0)
+    sigma = sigma.fillna(1.0)
+    mu = mu.fillna(0.0)
+    return mu, sigma
+
+
+def apply_standardizer_df(X_any: pd.DataFrame, mu: pd.Series, sigma: pd.Series) -> pd.DataFrame:
+    X_aligned = X_any.copy()
+    for col in mu.index:
+        if col not in X_aligned.columns:
+            X_aligned[col] = 0.0
+    X_aligned = X_aligned[mu.index]
+    return (X_aligned - mu) / sigma
+
+
+def train_knn_with_nb_features(
     df_train: pd.DataFrame,
     food_k: int,
     feeling_k: int,
     soundtrack_k: int,
     nb_alpha: float,
-    n_estimators: int,
-    max_depth,
-    min_samples_leaf: int,
-    max_features,
-    bootstrap: bool,
-    random_state: int,
+    n_neighbors: int,
+    weights: str,
+    metric: str,
+    p: int,
+    standardize_inputs: bool = STANDARDIZE_INPUTS,
+    feature_subset_size = RANDOM_FEATURE_SUBSET_SIZE,
+    feature_subset_random_state: int = FEATURE_SUBSET_RANDOM_STATE,
 ):
     food_model, feeling_model, soundtrack_model = train_text_nb_models(
         df_train,
@@ -1183,7 +782,7 @@ def train_rf_with_nb_features(
 
     multihot_bundle = MultiHotCategoryBundle(MULTIHOT_COLS).fit(df_train)
 
-    X_train = build_rf_feature_matrix(
+    X_train_full = build_knn_feature_matrix(
         df_train,
         food_model,
         feeling_model,
@@ -1192,42 +791,71 @@ def train_rf_with_nb_features(
     )
     y_train = df_train[LABEL_COL].to_numpy()
 
-    rf_model = RandomForestClassifier(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        min_samples_leaf=min_samples_leaf,
-        max_features=max_features,
-        bootstrap=bootstrap,
-        random_state=random_state,
+    selected_feature_cols = select_random_feature_subset(
+        X_train_full.columns,
+        feature_subset_size,
+        feature_subset_random_state,
+    )
+    X_train = X_train_full[selected_feature_cols].copy()
+
+    scaler_mu = None
+    scaler_sigma = None
+    if standardize_inputs:
+        scaler_mu, scaler_sigma = fit_standardizer_df(X_train)
+        X_train = apply_standardizer_df(X_train, scaler_mu, scaler_sigma)
+
+    knn_model = KNeighborsClassifier(
+        n_neighbors=n_neighbors,
+        weights=weights,
+        metric=metric,
+        p=p,
         n_jobs=-1,
     )
-    rf_model.fit(X_train, y_train)
+    knn_model.fit(X_train, y_train)
 
-    return rf_model, food_model, feeling_model, soundtrack_model, multihot_bundle
+    return {
+        "knn_model": knn_model,
+        "food_model": food_model,
+        "feeling_model": feeling_model,
+        "soundtrack_model": soundtrack_model,
+        "multihot_bundle": multihot_bundle,
+        "selected_feature_cols": selected_feature_cols,
+        "standardize_inputs": standardize_inputs,
+        "scaler_mu": scaler_mu,
+        "scaler_sigma": scaler_sigma,
+    }
 
 
-def predict_rf_from_models(
+def predict_knn_from_models(
     df_any: pd.DataFrame,
-    rf_model: RandomForestClassifier,
-    food_model: TopKBernoulliNB,
-    feeling_model: TopKBernoulliNB,
-    soundtrack_model: TopKBernoulliNB,
-    multihot_bundle: MultiHotCategoryBundle,
+    trained_bundle: dict,
 ) -> pd.DataFrame:
-    X_any = build_rf_feature_matrix(
+    X_any_full = build_knn_feature_matrix(
         df_any,
-        food_model,
-        feeling_model,
-        soundtrack_model,
-        multihot_bundle,
+        trained_bundle["food_model"],
+        trained_bundle["feeling_model"],
+        trained_bundle["soundtrack_model"],
+        trained_bundle["multihot_bundle"],
     )
 
-    pred = rf_model.predict(X_any)
+    X_any = X_any_full.copy()
+    for col in trained_bundle["selected_feature_cols"]:
+        if col not in X_any.columns:
+            X_any[col] = 0.0
+    X_any = X_any[trained_bundle["selected_feature_cols"]]
+
+    if trained_bundle["standardize_inputs"]:
+        X_any = apply_standardizer_df(
+            X_any,
+            trained_bundle["scaler_mu"],
+            trained_bundle["scaler_sigma"],
+        )
+
+    pred = trained_bundle["knn_model"].predict(X_any)
 
     out = df_any.copy()
     out["pred"] = pred
     return out
-
 
 # =========================
 # CV / tuning
@@ -1238,13 +866,15 @@ def evaluate_one_param_combo_kfold(
     feeling_k: int,
     soundtrack_k: int,
     nb_alpha: float,
-    n_estimators: int,
-    max_depth,
-    min_samples_leaf: int,
-    max_features,
-    bootstrap: bool,
+    n_neighbors: int,
+    weights: str,
+    metric: str,
+    p: int,
     n_splits: int = 3,
     random_state: int = 42,
+    standardize_inputs: bool = STANDARDIZE_INPUTS,
+    feature_subset_size = RANDOM_FEATURE_SUBSET_SIZE,
+    feature_subset_random_state: int = FEATURE_SUBSET_RANDOM_STATE,
 ) -> dict:
     skf = StratifiedKFold(
         n_splits=n_splits,
@@ -1256,59 +886,60 @@ def evaluate_one_param_combo_kfold(
     X_dummy = df.drop(columns=[LABEL_COL])
     y = df[LABEL_COL].to_numpy()
 
-    for train_idx, val_idx in skf.split(X_dummy, y):
+    for fold_id, (train_idx, val_idx) in enumerate(skf.split(X_dummy, y)):
         df_train = df.iloc[train_idx].copy()
         df_val = df.iloc[val_idx].copy()
 
-        (
-            rf_model,
-            food_model,
-            feeling_model,
-            soundtrack_model,
-            multihot_bundle,
-        ) = train_rf_with_nb_features(
+        trained_bundle = train_knn_with_nb_features(
             df_train=df_train,
             food_k=food_k,
             feeling_k=feeling_k,
             soundtrack_k=soundtrack_k,
             nb_alpha=nb_alpha,
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            min_samples_leaf=min_samples_leaf,
-            max_features=max_features,
-            bootstrap=bootstrap,
-            random_state=random_state,
+            n_neighbors=n_neighbors,
+            weights=weights,
+            metric=metric,
+            p=p,
+            standardize_inputs=standardize_inputs,
+            feature_subset_size=feature_subset_size,
+            feature_subset_random_state=feature_subset_random_state + fold_id,
         )
 
-        val_pred_df = predict_rf_from_models(
-            df_val,
-            rf_model,
-            food_model,
-            feeling_model,
-            soundtrack_model,
-            multihot_bundle,
-        )
-
+        val_pred_df = predict_knn_from_models(df_val, trained_bundle)
         val_acc = accuracy_score(df_val[LABEL_COL], val_pred_df["pred"])
         fold_scores.append(val_acc)
+
+    effective_feature_count = None
+    if len(fold_scores) > 0:
+        effective_feature_count = min(
+            feature_subset_size if feature_subset_size is not None else 10**9,
+            build_knn_feature_matrix(
+                df.iloc[: min(len(df), 5)].copy(),
+                train_food_nb(df, food_k, nb_alpha),
+                train_feeling_nb(df, feeling_k, nb_alpha),
+                train_soundtrack_nb(df, soundtrack_k, nb_alpha),
+                MultiHotCategoryBundle(MULTIHOT_COLS).fit(df),
+            ).shape[1]
+        )
 
     return {
         "food_k": food_k,
         "feeling_k": feeling_k,
         "soundtrack_k": soundtrack_k,
         "nb_alpha": nb_alpha,
-        "n_estimators": n_estimators,
-        "max_depth": max_depth,
-        "min_samples_leaf": min_samples_leaf,
-        "max_features": max_features,
-        "bootstrap": bootstrap,
+        "n_neighbors": n_neighbors,
+        "weights": weights,
+        "metric": metric,
+        "p": p,
+        "standardize_inputs": standardize_inputs,
+        "feature_subset_size": feature_subset_size,
+        "effective_feature_count": effective_feature_count,
         "fold_scores": fold_scores,
         "mean_val_acc": float(np.mean(fold_scores)),
         "std_val_acc": float(np.std(fold_scores)),
     }
 
-
-def tune_rf_nb_hyperparameters_kfold(
+def tune_knn_nb_hyperparameters_kfold(
     csv_path: str = CSV_PATH,
     n_splits: int = 3,
     random_state: int = 42,
@@ -1316,11 +947,12 @@ def tune_rf_nb_hyperparameters_kfold(
     feeling_k_grid=None,
     soundtrack_k_grid=None,
     nb_alpha_grid=None,
-    n_estimators_grid=None,
-    max_depth_grid=None,
-    min_samples_leaf_grid=None,
-    max_features_grid=None,
-    bootstrap_grid=None,
+    n_neighbors_grid=None,
+    weights_grid=None,
+    metric_grid=None,
+    p_grid=None,
+    standardize_inputs_grid=None,
+    feature_subset_size_grid=None,
 ):
     df = load_cleaned_data(csv_path)
 
@@ -1332,16 +964,18 @@ def tune_rf_nb_hyperparameters_kfold(
         soundtrack_k_grid = [62]
     if nb_alpha_grid is None:
         nb_alpha_grid = [1.0]
-    if n_estimators_grid is None:
-        n_estimators_grid = [150, 175, 200]
-    if max_depth_grid is None:
-        max_depth_grid = [12, 14, 16]
-    if min_samples_leaf_grid is None:
-        min_samples_leaf_grid = [1, 2]
-    if max_features_grid is None:
-        max_features_grid = ["log2"]
-    if bootstrap_grid is None:
-        bootstrap_grid = [True]
+    if n_neighbors_grid is None:
+        n_neighbors_grid = [5, 7, 9, 11, 13]
+    if weights_grid is None:
+        weights_grid = ["uniform", "distance"]
+    if metric_grid is None:
+        metric_grid = ["minkowski"]
+    if p_grid is None:
+        p_grid = [1, 2]
+    if standardize_inputs_grid is None:
+        standardize_inputs_grid = [True]
+    if feature_subset_size_grid is None:
+        feature_subset_size_grid = [RANDOM_FEATURE_SUBSET_SIZE]
 
     param_grid = list(
         product(
@@ -1349,11 +983,12 @@ def tune_rf_nb_hyperparameters_kfold(
             feeling_k_grid,
             soundtrack_k_grid,
             nb_alpha_grid,
-            n_estimators_grid,
-            max_depth_grid,
-            min_samples_leaf_grid,
-            max_features_grid,
-            bootstrap_grid,
+            n_neighbors_grid,
+            weights_grid,
+            metric_grid,
+            p_grid,
+            standardize_inputs_grid,
+            feature_subset_size_grid,
         )
     )
 
@@ -1369,11 +1004,12 @@ def tune_rf_nb_hyperparameters_kfold(
             feeling_k,
             soundtrack_k,
             nb_alpha,
-            n_estimators,
-            max_depth,
-            min_samples_leaf,
-            max_features,
-            bootstrap,
+            n_neighbors,
+            weights,
+            metric,
+            p,
+            standardize_inputs,
+            feature_subset_size,
         ) = params
 
         result = evaluate_one_param_combo_kfold(
@@ -1382,13 +1018,15 @@ def tune_rf_nb_hyperparameters_kfold(
             feeling_k=feeling_k,
             soundtrack_k=soundtrack_k,
             nb_alpha=nb_alpha,
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            min_samples_leaf=min_samples_leaf,
-            max_features=max_features,
-            bootstrap=bootstrap,
+            n_neighbors=n_neighbors,
+            weights=weights,
+            metric=metric,
+            p=p,
             n_splits=n_splits,
             random_state=random_state,
+            standardize_inputs=standardize_inputs,
+            feature_subset_size=feature_subset_size,
+            feature_subset_random_state=FEATURE_SUBSET_RANDOM_STATE,
         )
 
         all_results.append(result)
@@ -1400,9 +1038,8 @@ def tune_rf_nb_hyperparameters_kfold(
         print(
             f"[{combo_id}/{len(param_grid)}] "
             f"food_k={food_k}, feeling_k={feeling_k}, soundtrack_k={soundtrack_k}, "
-            f"n_estimators={n_estimators}, max_depth={max_depth}, "
-            f"min_samples_leaf={min_samples_leaf}, max_features={max_features}, "
-            f"bootstrap={bootstrap} "
+            f"n_neighbors={n_neighbors}, weights={weights}, metric={metric}, p={p}, "
+            f"standardize={standardize_inputs}, feature_subset_size={feature_subset_size} "
             f"=> mean_val_acc={result['mean_val_acc']:.4f}, std={result['std_val_acc']:.4f} "
             f"| elapsed={elapsed/60:.1f} min, remain≈{remain/60:.1f} min"
         )
@@ -1422,11 +1059,12 @@ def tune_rf_nb_hyperparameters_kfold(
     print("feeling_k:", best_row["feeling_k"])
     print("soundtrack_k:", best_row["soundtrack_k"])
     print("nb_alpha:", best_row["nb_alpha"])
-    print("n_estimators:", best_row["n_estimators"])
-    print("max_depth:", best_row["max_depth"])
-    print("min_samples_leaf:", best_row["min_samples_leaf"])
-    print("max_features:", best_row["max_features"])
-    print("bootstrap:", best_row["bootstrap"])
+    print("n_neighbors:", best_row["n_neighbors"])
+    print("weights:", best_row["weights"])
+    print("metric:", best_row["metric"])
+    print("p:", best_row["p"])
+    print("standardize_inputs:", best_row["standardize_inputs"])
+    print("feature_subset_size:", best_row["feature_subset_size"])
     print("best mean validation accuracy:", round(best_row["mean_val_acc"], 4))
     print("best std:", round(best_row["std_val_acc"], 4))
     print("fold scores:", best_row["fold_scores"])
@@ -1437,135 +1075,270 @@ def tune_rf_nb_hyperparameters_kfold(
             "feeling_k": best_row["feeling_k"],
             "soundtrack_k": best_row["soundtrack_k"],
             "nb_alpha": best_row["nb_alpha"],
-            "n_estimators": best_row["n_estimators"],
-            "max_depth": best_row["max_depth"],
-            "min_samples_leaf": best_row["min_samples_leaf"],
-            "max_features": best_row["max_features"],
-            "bootstrap": best_row["bootstrap"],
+            "n_neighbors": best_row["n_neighbors"],
+            "weights": best_row["weights"],
+            "metric": best_row["metric"],
+            "p": best_row["p"],
+            "standardize_inputs": best_row["standardize_inputs"],
+            "feature_subset_size": best_row["feature_subset_size"],
         },
         "best_mean_val_acc": best_row["mean_val_acc"],
         "best_std_val_acc": best_row["std_val_acc"],
         "results_df": results_df,
     }
 
+# =========================
+# Public prediction API
+# =========================
+_MODEL_CACHE = None
+_TRAIN_CLEAN_DF_CACHE = None
+
+
+def _get_train_clean_df():
+    global _TRAIN_CLEAN_DF_CACHE
+    if _TRAIN_CLEAN_DF_CACHE is None:
+        _TRAIN_CLEAN_DF_CACHE = load_cleaned_data(CSV_PATH).copy()
+    return _TRAIN_CLEAN_DF_CACHE
+
+
+def ensure_prediction_schema(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Make sure a user-provided single row / csv has all raw columns
+    needed by the downstream cleaning + feature-building pipeline.
+    """
+    df = df_raw.copy()
+
+    expected_text = [
+        "Painting",
+        FEEL_COL,
+        ROOM_COL,
+        WHO_COL,
+        SEASON_COL,
+        FOOD_COL,
+        SOUND_COL,
+    ]
+
+    expected_numeric_like = [
+        UNIQUE_ID_COL,
+        INTENSITY_COL,
+        PROMINENT_COLOURS_COL,
+        OBJECTS_COL,
+        PAYMENT_COL,
+    ] + LIKERT_COLS
+
+    for col in expected_text:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    for col in expected_numeric_like:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    return df
+
+
+def clean_raw_dataframe_for_prediction(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prediction-time cleaning:
+    - keep all rows
+    - do not drop rows just because labels are missing
+    - fill missing numeric values using training-set medians
+    - fill missing text values with "Missing"
+    """
+    df = ensure_prediction_schema(df_raw).copy()
+
+    label_map = {
+        "The Persistence of Memory": 0,
+        "The Starry Night": 1,
+        "The Water Lily Pond": 2,
+    }
+
+    if "Painting" in df.columns:
+        df["Painting"] = df["Painting"].astype(str).str.strip()
+        df["Painting"] = df["Painting"].replace("nan", np.nan)
+        df[LABEL_COL] = df["Painting"].map(label_map)
+
+    for col in LIKERT_COLS:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            df[col], _ = clean_bounded_scale(df[col], 1, 5)
+        else:
+            mapped = df[col].astype(str).str.strip().replace("nan", np.nan).map(LIKERT_MAP)
+            df[col] = pd.to_numeric(mapped, errors="coerce")
+            df[col], _ = clean_bounded_scale(df[col], 1, 5)
+
+    df[INTENSITY_COL], _ = clean_bounded_scale(df[INTENSITY_COL], 1, 10)
+    df[PROMINENT_COLOURS_COL], _, _, _ = clean_count_column(df[PROMINENT_COLOURS_COL])
+    df[OBJECTS_COL], _, _, _ = clean_count_column(df[OBJECTS_COL])
+
+    if pd.api.types.is_numeric_dtype(df[PAYMENT_COL]):
+        x = pd.to_numeric(df[PAYMENT_COL], errors="coerce")
+        x.loc[x < 0] = 0
+        df[PAYMENT_COL] = x.clip(0, 324_000_000)
+    else:
+        df[PAYMENT_COL], _, _, _ = parse_payment_column(df[PAYMENT_COL])
+
+    train_df = _get_train_clean_df()
+
+    numeric_fill_cols = [
+        UNIQUE_ID_COL,
+        INTENSITY_COL,
+        PROMINENT_COLOURS_COL,
+        OBJECTS_COL,
+        PAYMENT_COL,
+    ] + LIKERT_COLS
+
+    text_fill_cols = [
+        "Painting",
+        FEEL_COL,
+        ROOM_COL,
+        WHO_COL,
+        SEASON_COL,
+        FOOD_COL,
+        SOUND_COL,
+    ]
+
+    for col in numeric_fill_cols:
+        current_median = df[col].median()
+        train_median = train_df[col].median() if col in train_df.columns else np.nan
+
+        if pd.isna(current_median):
+            fill_value = train_median
+        else:
+            fill_value = current_median
+
+        if pd.isna(fill_value):
+            fill_value = 0.0
+
+        df[col] = df[col].fillna(fill_value)
+
+    for col in text_fill_cols:
+        df[col] = df[col].fillna("Missing")
+
+    return df.reset_index(drop=True)
+
+
+def _get_trained_model():
+    global _MODEL_CACHE
+    if _MODEL_CACHE is None:
+        _MODEL_CACHE = train_final_model()
+    return _MODEL_CACHE
+
+
+def predict(x):
+    """
+    x: a single raw row, usually a dict
+    return: one predicted painting name
+    """
+    model = _get_trained_model()
+
+    df_one_raw = pd.DataFrame([x])
+    df_one_clean = clean_raw_dataframe_for_prediction(df_one_raw)
+
+    pred_df = predict_knn_from_models(df_one_clean, model)
+    return LABEL_TO_NAME[int(pred_df["pred"].iloc[0])]
+
+
+def predict_all(filename):
+    """
+    filename: path to a raw csv file
+    return: list[str] of predicted painting names
+    """
+    model = _get_trained_model()
+
+    df_raw = pd.read_csv(filename)
+    df_clean = clean_raw_dataframe_for_prediction(df_raw)
+
+    if len(df_clean) == 0:
+        return []
+
+    pred_df = predict_knn_from_models(df_clean, model)
+    return [LABEL_TO_NAME[int(y)] for y in pred_df["pred"].tolist()]
 
 # =========================
 # Fit one final model with the retuned params
 # =========================
 def train_final_model(
     csv_path: str = CSV_PATH,
-    random_state: int = 42,
 ):
     df = load_cleaned_data(csv_path)
 
-    return train_rf_with_nb_features(
+    return train_knn_with_nb_features(
         df_train=df,
         food_k=FOOD_K,
         feeling_k=FEELING_K,
         soundtrack_k=SOUNDTRACK_K,
         nb_alpha=NB_ALPHA,
-        n_estimators=RF_N_ESTIMATORS,
-        max_depth=RF_MAX_DEPTH,
-        min_samples_leaf=RF_MIN_SAMPLES_LEAF,
-        max_features=RF_MAX_FEATURES,
-        bootstrap=RF_BOOTSTRAP,
-        random_state=random_state,
+        n_neighbors=KNN_N_NEIGHBORS,
+        weights=KNN_WEIGHTS,
+        metric=KNN_METRIC,
+        p=KNN_P,
+        standardize_inputs=STANDARDIZE_INPUTS,
+        feature_subset_size=RANDOM_FEATURE_SUBSET_SIZE,
+        feature_subset_random_state=FEATURE_SUBSET_RANDOM_STATE,
     )
 
 def train_from_raw_or_clean_csv(
     csv_path: str,
     is_cleaned: bool = True,
     cleaned_output_path: str = "cleaned_data_final.csv",
-    random_state: int = 42,
 ):
-    """
-    Convenience entry:
-    - if is_cleaned=True, read csv_path directly
-    - if is_cleaned=False, clean it first and then train
-    """
     if is_cleaned:
         df = load_cleaned_data(csv_path)
     else:
         df = clean_raw_csv_to_cleaned_csv(csv_path, cleaned_output_path)
 
-    return train_rf_with_nb_features(
+    return train_knn_with_nb_features(
         df_train=df,
         food_k=FOOD_K,
         feeling_k=FEELING_K,
         soundtrack_k=SOUNDTRACK_K,
         nb_alpha=NB_ALPHA,
-        n_estimators=RF_N_ESTIMATORS,
-        max_depth=RF_MAX_DEPTH,
-        min_samples_leaf=RF_MIN_SAMPLES_LEAF,
-        max_features=RF_MAX_FEATURES,
-        bootstrap=RF_BOOTSTRAP,
-        random_state=random_state,
+        n_neighbors=KNN_N_NEIGHBORS,
+        weights=KNN_WEIGHTS,
+        metric=KNN_METRIC,
+        p=KNN_P,
+        standardize_inputs=STANDARDIZE_INPUTS,
+        feature_subset_size=RANDOM_FEATURE_SUBSET_SIZE,
+        feature_subset_random_state=FEATURE_SUBSET_RANDOM_STATE,
     )
-
-
-
 
 if __name__ == "__main__":
-    print("Updated pipeline summary:")
-    print("- remove unique_id from RF input")
-    print("- add room / who / season multihot features")
-    print("- keep original 3-text-NB + RF overall logic")
-    print()
-    print("Retuned best params:")
-    print(
-        {
-            "food_k": FOOD_K,
-            "feeling_k": FEELING_K,
-            "soundtrack_k": SOUNDTRACK_K,
-            "nb_alpha": NB_ALPHA,
-            "n_estimators": RF_N_ESTIMATORS,
-            "max_depth": RF_MAX_DEPTH,
-            "min_samples_leaf": RF_MIN_SAMPLES_LEAF,
-            "max_features": RF_MAX_FEATURES,
-            "bootstrap": RF_BOOTSTRAP,
-        }
-    )
+    # api example
+    x = predict({
+        "unique_id": 2,
+        "On a scale of 1–10, how intense is the emotion conveyed by the artwork?": 8,
+        "Describe how this painting makes you feel.": "calm and peaceful",
+        "This art piece makes me feel sombre.": "2 - Disagree",
+        "This art piece makes me feel content.": "4 - Agree",
+        "This art piece makes me feel calm.": "5 - Strongly agree",
+        "This art piece makes me feel uneasy.": "1 - Strongly disagree",
+        "How many prominent colours do you notice in this painting?": 3,
+        "How many objects caught your eye in the painting?": 2,
+        "How much (in Canadian dollars) would you be willing to pay for this painting?": "200",
+        "If you could purchase this painting, which room would you put that painting in?": "Living room",
+        "If you could view this art in person, who would you want to view it with?": "By yourself",
+        "What season does this art piece remind you of?": "Spring",
+        "If this painting was a food, what would be?": "salad",
+        "Imagine a soundtrack for this painting. Describe that soundtrack without naming any objects in the painting.": "soft calm piano music"
+    })
+    print(x)
 
-    # search_result = tune_rf_nb_hyperparameters_kfold(
+    y = predict_all("cleaned_data_final.csv")
+    print(y[:5])
+
+    # tuning api example
+    # search_result = tune_knn_nb_hyperparameters_kfold(
     #     csv_path=CSV_PATH,
     #     n_splits=5,
     #     random_state=42,
-    #     food_k_grid=[38, 40, 42],
-    #     feeling_k_grid=[38, 40, 42],
-    #     soundtrack_k_grid=[59, 60, 61, 62],
+    #     food_k_grid=[42],
+    #     feeling_k_grid=[38],
+    #     soundtrack_k_grid=[62],
     #     nb_alpha_grid=[1.0],
-    #     n_estimators_grid=[120, 140, 160, 180, 200, 220, 240],
-    #     max_depth_grid=[7, 9, 11, 13],
-    #     min_samples_leaf_grid=[2, 4, 6, 7],
-    #     max_features_grid=["log2"],
-    #     bootstrap_grid=[True],
+    #     n_neighbors_grid=[27],
+    #     weights_grid=["distance"],
+    #     metric_grid=["minkowski"],
+    #     p_grid=[1],
+    #     standardize_inputs_grid=[True],
+    #     feature_subset_size_grid=[None],
     # )
-
-    search_result = tune_rf_nb_hyperparameters_kfold(
-        csv_path=CSV_PATH,
-        n_splits=5,
-        random_state=42,
-        food_k_grid=[42],
-        feeling_k_grid=[38],
-        soundtrack_k_grid=[62],
-        nb_alpha_grid=[1.0],
-        n_estimators_grid=list(range(140, 156, 3)),
-        max_depth_grid=[9, 10, 11, 12, 13],
-        min_samples_leaf_grid=[1, 2],
-        max_features_grid=[6, 7],
-        bootstrap_grid=[True],
-
-        # food_k=42,
-        # feeling_k = 38,
-        # soundtrack_k = 62,
-        # nb_alpha = 1.0,
-        #
-        # n_estimators = 155,
-        # max_depth = 11,
-        # min_samples_leaf = 2,
-        # max_features = 6,
-        # bootstrap = True,
-    )
-    results_df = search_result["results_df"]
-    results_df.to_csv("updated_multihot_tuning_results.csv", index=False)
-    print("\nSaved tuning results to updated_multihot_tuning_results.csv")
