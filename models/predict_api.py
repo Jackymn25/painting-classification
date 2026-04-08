@@ -1,28 +1,3 @@
-
-"""
-pred.py
-
-Numpy/Pandas-only implementation of the uploaded Logistic+NB pipeline.
-
-Allowed imports only:
-- csv
-- random
-- re
-- numpy
-- pandas
-
-This file exposes:
-    predict_all(filename)
-
-It will:
-1) load the training CSV (prefers cleaned 1610x17 CSV if present),
-2) train the full model with the tuned hyperparameters,
-3) predict painting titles for all rows in `filename`.
-
-It also includes an optional K-fold validation in __main__ to verify
-that the numpy version matches the original sklearn pipeline closely.
-"""
-
 import csv
 import random
 import re
