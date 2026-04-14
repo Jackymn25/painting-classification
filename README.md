@@ -84,16 +84,16 @@ Although one held-out test run produced a higher score, the project reports `0.9
 
 ## How to Run
 
-Run the prediction script in /models:
+Run the prediction script:
 
 ```bash
-python pred.py
+python xxx.py
 ```
 
 If the script exposes a function like `predict_all(filename)`, use it like this:
 
 ```python
-from pred import predict_all
+from xxx import predict_all
 
 preds = predict_all("test.csv")
 print(preds[:10])
